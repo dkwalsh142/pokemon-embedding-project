@@ -1,3 +1,7 @@
 requests
 Pillow
 tqdm
+numpy
+torch
+torchvision
+timm

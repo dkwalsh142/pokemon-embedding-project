@@ -6,6 +6,7 @@ crash the run.
 
 Usage:
     python -m data_tools.download_tcgdex --sets sv01 sv02
+    python -m data_tools.download_tcgdex --prefix sv --no-high
     python -m data_tools.download_tcgdex --all
 """
 
@@ -171,6 +172,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--sets", nargs="+", help="TCGdex set IDs, e.g. sv01 base1")
+    group.add_argument("--prefix", help="every set whose id starts with this, e.g. sv")
     group.add_argument("--all", action="store_true", help="download every set in the catalog")
     parser.add_argument("--out", default="data/tcgdex", help="output folder (default: data/tcgdex)")
     parser.add_argument("--sleep", type=float, default=0.2, help="seconds to wait after each request")
@@ -185,7 +187,13 @@ def main():
     all_sets = dl.get_json(f"{API}/sets", dl.out / "sets.json")
     known_ids = {s["id"] for s in all_sets}
 
-    set_ids = [s["id"] for s in all_sets] if args.all else args.sets
+    if args.all:
+        set_ids = [s["id"] for s in all_sets]
+    elif args.prefix:
+        set_ids = [s["id"] for s in all_sets if s["id"].startswith(args.prefix)]
+        log.info("Prefix '%s' matches %d sets: %s", args.prefix, len(set_ids), " ".join(set_ids))
+    else:
+        set_ids = args.sets
     for set_id in set_ids:
         if set_id not in known_ids:
             log.error("Unknown set id '%s' (see %s for valid ids)", set_id, dl.out / "sets.json")
