@@ -9,7 +9,8 @@ Every random choice is drawn from a `random.Random` object, so passing a seeded
 one reproduces the exact same augmented view (used for the fixed eval queries).
 
 Preview:
-    python -m embed.augment --n 15
+    python -m embed.augment --n 15                 # random full-pipeline views
+    python -m embed.augment --per-effect --cards 3   # one labelled column per effect
 """
 
 import math
@@ -118,21 +119,40 @@ def low_resolution(x, rng):
     return TF.resize(small, [HEIGHT, WIDTH], antialias=True)
 
 
-def occlusion(x, rng):
-    """A finger or another card's edge covering a small strip along one side."""
+# Fraction of the card area covered at each occlusion level, and how often each is picked.
+OCCLUSION_LEVELS = {"light": (0.02, 0.05), "medium": (0.05, 0.12), "heavy": (0.12, 0.25)}
+OCCLUSION_WEIGHTS = {"light": 0.5, "medium": 0.35, "heavy": 0.15}
+
+
+def occlusion(x, rng, level=None):
+    """A finger, hand or another card covering part of the card from one edge or corner.
+
+    `level` is "light", "medium" or "heavy" (see OCCLUSION_LEVELS); None picks one at random.
+    """
+    if level is None:
+        level = rng.choices(list(OCCLUSION_WEIGHTS), weights=list(OCCLUSION_WEIGHTS.values()))[0]
+    area = rng.uniform(*OCCLUSION_LEVELS[level]) * WIDTH * HEIGHT
+
     x = x.clone()
-    colour = torch.tensor([rng.uniform(0.5, 0.9), rng.uniform(0.35, 0.7), rng.uniform(0.3, 0.6)])
+    colour = torch.tensor([rng.uniform(0.5, 0.9), rng.uniform(0.35, 0.7), rng.uniform(0.3, 0.6)])  # skin
     if rng.random() < 0.4:
-        colour = torch.full((3,), rng.uniform(0.0, 0.3))
-    side = rng.choice(["top", "bottom", "left", "right"])
-    if side in ("top", "bottom"):
-        h, w = int(HEIGHT * rng.uniform(0.04, 0.12)), int(WIDTH * rng.uniform(0.15, 0.4))
+        colour = torch.full((3,), rng.uniform(0.0, 0.3))  # dark sleeve or card back
+    side = rng.choice(["top", "bottom", "left", "right", "corner"])
+    if side in ("top", "bottom"):  # strip along a short edge
+        w = int(WIDTH * rng.uniform(0.3, 0.9))
+        h = min(int(area / w), HEIGHT // 2)
         x0 = rng.randint(0, WIDTH - w)
         y0 = 0 if side == "top" else HEIGHT - h
-    else:
-        h, w = int(HEIGHT * rng.uniform(0.1, 0.3)), int(WIDTH * rng.uniform(0.05, 0.15))
+    elif side in ("left", "right"):  # strip along a long edge
+        h = int(HEIGHT * rng.uniform(0.2, 0.6))
+        w = min(int(area / h), WIDTH // 2)
         y0 = rng.randint(0, HEIGHT - h)
         x0 = 0 if side == "left" else WIDTH - w
+    else:  # roughly square block over one corner, like an overlapping card
+        w = min(int(math.sqrt(area * rng.uniform(0.6, 1.6))), WIDTH // 2)
+        h = min(int(area / w), HEIGHT // 2)
+        x0 = rng.choice([0, WIDTH - w])
+        y0 = rng.choice([0, HEIGHT - h])
     x[:, y0:y0 + h, x0:x0 + w] = colour.view(3, 1, 1)
     return x
 
@@ -188,6 +208,54 @@ def clean_view(img):
     return (to_tensor(img) * 255).round().to(torch.uint8)
 
 
+def effect_gallery(images, rng):
+    """One column per camera effect applied on its own, plus the full pipeline.
+
+    Under each card is a 2x zoom of the name bar, where blur, noise and JPEG
+    artefacts are easy to see. Returns a PIL image.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    def uint8_effect(fn):
+        return lambda x, r: fn((x * 255).round().to(torch.uint8), r).float() / 255
+
+    effects = [
+        ("clean scan", lambda x, r: x),
+        ("misalign", lambda x, r: misalign(x, r, mat_colour(r))),
+        ("perspective", lambda x, r: perspective(x, r, mat_colour(r))),
+        ("colour shift", colour_shift),
+        ("glare", glare),
+        ("gaussian blur", gaussian_blur),
+        ("motion blur", motion_blur),
+        ("low resolution", low_resolution),
+        *[(f"occlusion ({lvl})", lambda x, r, lvl=lvl: occlusion(x, r, lvl)) for lvl in OCCLUSION_LEVELS],
+        ("sensor noise", sensor_noise),
+        ("JPEG", uint8_effect(jpeg)),
+        ("all combined", None),
+    ]
+    header, zoom_h = 36, HEIGHT // 3  # zoom shows the top-left 112x53 px at 2x
+    row_h = HEIGHT + zoom_h
+    grid = Image.new("RGB", (len(effects) * WIDTH, header + len(images) * row_h), "white")
+    draw = ImageDraw.Draw(grid)
+    font = ImageFont.load_default(size=20)
+
+    for c, (label, fn) in enumerate(effects):
+        draw.text((c * WIDTH + WIDTH // 2, header // 2), label, fill="black", font=font, anchor="mm")
+        for r, img in enumerate(images):
+            if fn is None:
+                view = camera_augment(img, rng)
+            else:
+                view = (fn(to_tensor(img), rng).clamp(0, 1) * 255).round().to(torch.uint8)
+            card = Image.fromarray(view.permute(1, 2, 0).numpy())
+            zoom = card.crop((0, 0, WIDTH // 2, zoom_h // 2)).resize((WIDTH, zoom_h), Image.NEAREST)
+            y = header + r * row_h
+            grid.paste(card, (c * WIDTH, y))
+            grid.paste(zoom, (c * WIDTH, y + HEIGHT))
+    for c in range(1, len(effects)):  # thin separators between columns
+        draw.line([(c * WIDTH, 0), (c * WIDTH, grid.height)], fill="white", width=3)
+    return grid
+
+
 if __name__ == "__main__":
     import argparse
     import csv
@@ -199,16 +267,27 @@ if __name__ == "__main__":
     parser.add_argument("--data", default="data/tcgdex")
     parser.add_argument("--n", type=int, default=15, help="augmented views per card")
     parser.add_argument("--cards", type=int, default=4)
-    parser.add_argument("--out", default="data/augment_preview.png")
+    parser.add_argument("--per-effect", action="store_true",
+                        help="one labelled column per effect instead of random full-pipeline views")
+    parser.add_argument("--seed", type=int, help="fix the random cards and effects")
+    parser.add_argument("--out", help="default: data/augment_preview.png (data/augment_effects.png with --per-effect)")
     args = parser.parse_args()
+    random.seed(args.seed)
 
     with open(Path(args.data) / "catalog.csv", newline="") as f:
         rows = random.sample(list(csv.DictReader(f)), args.cards)
+    images = [np.array(Image.open(Path(args.data) / row["low_path"]).convert("RGB")) for row in rows]
 
+    if args.per_effect:
+        out = args.out or "data/augment_effects.png"
+        effect_gallery(images, random.Random(args.seed)).save(out)
+        print(f"Saved {out}: each column is one effect on its own; under each card is a 2x zoom of the name bar")
+        raise SystemExit
+
+    args.out = args.out or "data/augment_preview.png"
     cols = args.n + 1
     grid = Image.new("RGB", (cols * WIDTH, args.cards * HEIGHT), "white")
-    for r, row in enumerate(rows):
-        img = np.array(Image.open(Path(args.data) / row["low_path"]).convert("RGB"))
+    for r, img in enumerate(images):
         views = [clean_view(img)] + [camera_augment(img) for _ in range(args.n)]
         for c, v in enumerate(views):
             grid.paste(Image.fromarray(v.permute(1, 2, 0).numpy()), (c * WIDTH, r * HEIGHT))

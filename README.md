@@ -51,8 +51,9 @@ Card images and text come from [TCGdex](https://tcgdex.dev), which is free and n
 | Milestone | Status |
 |---|---|
 | TCGdex download script | ✅ Done |
+| Stage 1 classifier embedding (code, augmentations, retrieval eval) | ✅ Code done, full training run next |
 | Detection, perspective warp, crop check, "played" logic | ⏳ Next |
-| Stage 1 classifier embedding and reference index | Planned |
+| Reference index and evaluation on real photos | Planned |
 | Stage 2 triplet fine-tuning, compared with Stage 1 | Planned |
 | OCR tie-breaker | Planned |
 | Fusion and Streamlit UI | Planned |
@@ -70,6 +71,9 @@ pip install -r requirements.txt
 ```bash
 # Specific sets (IDs from https://api.tcgdex.net/v2/en/sets)
 python -m data_tools.download_tcgdex --sets sv01 base1
+
+# Every Scarlet & Violet set, training images only (the high-res PNGs are only needed for OCR)
+python -m data_tools.download_tcgdex --prefix sv --no-high
 
 # Every set (several GB; add --no-high to skip the high-res PNGs)
 python -m data_tools.download_tcgdex --all
@@ -91,10 +95,25 @@ Downloads are cached in `data/tcgdex/`, so re-running only fetches what is missi
 
 ```
 data_tools/   TCGdex download and sanity-check scripts
+embed/        embedding model, camera augmentations, Stage 1 training, retrieval eval
 data/         downloaded data (not committed)
+checkpoints/  trained weights (not committed)
 ```
 
-Planned: `detect/`, `embed/`, `ocr/`, `fuse/` and `app/` for the remaining pipeline stages.
+Planned: `detect/`, `ocr/`, `fuse/` and `app/` for the remaining pipeline stages.
+
+### Train the Stage 1 embedding
+
+```bash
+# Quick check that everything runs (about a minute)
+python -m embed.train_stage1 --sets sv01 --epochs-a 1 --epochs-b 1 --views 2
+
+# Full run on every downloaded sv set; writes checkpoints/stage1/
+python -m embed.train_stage1
+
+# Picture of each camera augmentation on its own (data/augment_effects.png)
+python -m embed.augment --per-effect --cards 3
+```
 
 ## Evaluation
 
