@@ -99,3 +99,61 @@ Planned: `detect/`, `embed/`, `ocr/`, `fuse/` and `app/` for the remaining pipel
 ## Evaluation
 
 The main measure is top-K retrieval accuracy and final accuracy on held-out **real photos** of the demo cards, searched against the demo-only reference set. Accuracy on augmented catalogue scans would overstate performance. Stage 1 and Stage 2 embeddings are compared on the same test.
+
+### Compare embedding retrieval with OCR fusion
+
+Requires a trained `checkpoints/stage1/embedder.pt`, downloaded cards, a demo
+list of catalog IDs (one per line), and Tesseract with English language data.
+On macOS, install the OCR engine with `brew install tesseract`; the Python
+wrapper is included in `requirements.txt`.
+
+Run deterministic synthetic diagnostics against the demo gallery:
+
+```bash
+python -m fuse.evaluate --demo-list data/demo_cards.txt --views 3
+```
+
+Each card gets a clean control, three seeded camera-like degraded views, a view
+with most artwork covered (severe occlusion stress test), and a view with its
+name band covered. Queries are generated temporarily; original
+images are unchanged. The report records the source image, condition, and seed.
+These use the training augmenter and are diagnostic proxies, not real-photo
+accuracy. Use `--seed` to repeat with different degradations.
+
+The command prints embedding top-1, top-K recall, fused top-1, OCR fixes,
+regressions, and whether missing OCR preserves the full embedding ranking.
+It explicitly counts ambiguous cases where embedding top-1 is wrong but the
+correct card remains in the shortlist. If there are none, the test cannot show
+whether OCR rescues mistakes. Incorrect answers absent from top-K cannot be
+recovered by fusion. Covered text can occasionally produce OCR garbage; the
+report shows actual OCR availability rather than assuming extraction failed.
+
+For real photos, first crop and straighten each card, then create a CSV such as
+`data/photo_tests.csv` (paths relative to that CSV):
+
+```csv
+image_path,card_id,condition
+photos/scovillain_01.jpg,sv01-202,real_photo
+photos/scovillain_blur.jpg,sv01-202,blurred
+photos/scovillain_name_hidden.jpg,sv01-202,name_hidden
+```
+
+Use actual files and independently assigned ground-truth card IDs. Every labeled
+card must belong to the demo gallery; query photos are never added to it.
+
+```bash
+python -m fuse.evaluate --demo-list data/demo_cards.txt \
+  --manifest data/photo_tests.csv --out data/real_photo_eval.json
+```
+
+`--k 5` and `--ocr-weight 0.2` are defaults. Keep K fixed when comparing weights;
+use a separate validation collection for tuning and leave final test photos
+untouched. The default JSON report is `data/fusion_eval.json`; it contains all
+queries, OCR text and errors, candidate metadata and scores, and aggregate
+metrics by condition. Use different `--out` paths to retain multiple runs.
+
+Automated metric and fusion checks:
+
+```bash
+python -m unittest fuse.test_rank fuse.test_evaluate
+```
