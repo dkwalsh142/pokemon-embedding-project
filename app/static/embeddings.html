@@ -67,7 +67,7 @@
   .legend-item:hover { border-color: var(--line); }
   .legend-item.on { border-color: var(--accent); }
   .legend-item.off { opacity: .4; }
-  .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25); }
   .legend-item .count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
   .note { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
 
@@ -101,6 +101,9 @@
       <option value="era">Era</option>
       <option value="rarity">Rarity</option>
       <option value="category">Category</option>
+      <option value="type">Type</option>
+      <option value="color">Dominant colour</option>
+      <option value="layout">Layout</option>
       <option value="set_name">Set</option>
     </select>
   </label>
@@ -118,6 +121,15 @@
   </div>
   <aside>
     <div id="selected" hidden></div>
+    <h2>Filter by type</h2>
+    <p class="note">Pick one or more types; other cards are dimmed. Dual-type cards match either type; trainers are split into Item (including Tools), Supporter and Stadium.</p>
+    <div id="filter-type"></div>
+    <h2>Filter by colour</h2>
+    <p class="note">The colour covering most of the card, border excluded. Filters combine: a card must pass each one.</p>
+    <div id="filter-color"></div>
+    <h2>Filter by layout</h2>
+    <p class="note">From the TCGdex rarity: full art, illustration art, rainbow/gold, ex/V/GX rule box, other specials.</p>
+    <div id="filter-layout"></div>
     <h2>Legend</h2>
     <p class="note">Click an entry to highlight it and dim everything else.</p>
     <div id="legend"></div>
@@ -132,6 +144,24 @@ const CARD_ASPECT = 88 / 63;
 const PALETTE = ["#5aa9ff", "#f5b942", "#3ccf6e", "#ef5350", "#b47cff", "#4dd0e1",
                  "#ff8a65", "#f06292", "#c0ca33", "#90a4ae"];
 const OTHER_COLOR = "#5c6670";
+// colours players already associate with each energy type
+const TYPE_COLORS = {
+  Fire: "#ef5350", Water: "#42a5f5", Grass: "#66bb6a", Lightning: "#fdd835", Psychic: "#ab47bc",
+  Fighting: "#c0763a", Darkness: "#4f6f78", Metal: "#b0bec5", Dragon: "#c9a227", Fairy: "#f48fb1",
+  Colorless: "#e0e0e0", Energy: "#7e8a97", None: OTHER_COLOR,
+  // trainer kinds: shades of brown so they read as one family
+  Supporter: "#d7a86e", Item: "#a1694a", Stadium: "#7b5a44", "Trainer (other)": "#5d4a40",
+};
+// swatches for the dominant-colour names computed by embed/visualize.py
+const COLOR_SWATCHES = {
+  red: "#e53935", orange: "#fb8c00", yellow: "#fdd835", green: "#43a047", teal: "#26a69a", blue: "#1e88e5",
+  purple: "#8e24aa", pink: "#ec407a", white: "#f5f5f5", gray: "#9e9e9e", black: "#3a3a3a",
+};
+const LAYOUT_COLORS = {
+  "Regular": "#5c6670", "Rule box (ex, V, GX)": "#5aa9ff", "Full art": "#ef5350",
+  "Illustration art": "#3ccf6e", "Rainbow / gold": "#f5b942", "Other special": "#b47cff",
+};
+const FILTER_SWATCHES = { type: TYPE_COLORS, color: COLOR_SWATCHES, layout: LAYOUT_COLORS };
 const DIM_COLOR = "rgba(120, 130, 140, 0.12)";
 
 const canvas = document.getElementById("map");
@@ -148,6 +178,7 @@ let colorField = "era";
 let colors = [];          // per-card colour for the current colour field
 let legend = [];          // [{value, color, count}]
 let focus = null;         // {field, value} from the legend, or {query} from search; null = all bright
+const filters = { type: new Set(), color: new Set(), layout: new Set() };  // values picked in the sidebar; empty = no filter
 let selected = -1;        // card index whose neighbours are shown
 let hovered = -1;
 let view = { scale: 1, x: 0, y: 0 };  // screen = world * scale + offset
@@ -175,6 +206,7 @@ async function load() {
   document.getElementById("names").innerHTML = names.map(n => `<option value="${escapeHtml(n)}">`).join("");
   stats.textContent = `${data.cards.length} cards · PCA keeps ${(data.pca_explained * 100).toFixed(1)}% of the variance`;
 
+  renderFilters();
   setColorField(colorField);
   setLayout(layout, false);
   resize();
@@ -233,7 +265,9 @@ function setColorField(field) {
   data.cards.forEach(c => counts.set(c[field], (counts.get(c[field]) || 0) + 1));
   let values = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const colorOf = new Map();
-  if (field === "set_name" || field === "era") {
+  if (field in FILTER_SWATCHES) {
+    values.forEach(([v]) => colorOf.set(v, FILTER_SWATCHES[field][v] || OTHER_COLOR));
+  } else if (field === "set_name" || field === "era") {
     // many values (150 sets, ~20 eras): spread hues around the wheel, skipping so neighbours differ
     values.forEach(([v], i) => colorOf.set(v, `hsl(${(i * 137.5) % 360}, 65%, 60%)`));
   } else {
@@ -246,18 +280,59 @@ function setColorField(field) {
   draw();
 }
 
+// A card's types for the filter: its energy types, its trainer kind (["Item"], ...), or ["Energy"].
+const typesOf = card => card.types.length ? card.types : [card.type];
+const valuesOf = (card, field) => field === "type" ? typesOf(card) : [card[field]];
+const filtering = () => Object.values(filters).some(set => set.size);
+
 function isFocused(i) {
-  if (!focus) return true;
   const card = data.cards[i];
+  // a card must pass every active filter (AND); within one filter any picked value will do (OR)
+  for (const [field, picked] of Object.entries(filters)) {
+    if (picked.size && !valuesOf(card, field).some(v => picked.has(v))) return false;
+  }
+  if (!focus) return true;
   if (focus.query) return card.name.toLowerCase().includes(focus.query);
   return card[focus.field] === focus.value;
+}
+
+// One toggle per value, most common first, plus "All" to clear that filter.
+function renderFilters() {
+  for (const [field, picked] of Object.entries(filters)) {
+    const counts = new Map();
+    data.cards.forEach(c => valuesOf(c, field).forEach(v => counts.set(v, (counts.get(v) || 0) + 1)));
+    const items = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    document.getElementById(`filter-${field}`).innerHTML =
+      `<button class="legend-item${picked.size ? "" : " on"}" data-field="${field}" data-value="">
+        <span class="swatch"></span><span>All</span><span class="count">${data.cards.length}</span></button>` +
+      items.map(([value, count]) => {
+        const cls = picked.has(value) ? " on" : picked.size ? " off" : "";
+        return `<button class="legend-item${cls}" data-field="${field}" data-value="${escapeHtml(value)}">
+          <span class="swatch" style="background:${FILTER_SWATCHES[field][value] || OTHER_COLOR}"></span>
+          <span>${escapeHtml(value)}</span><span class="count">${count}</span></button>`;
+      }).join("");
+  }
+}
+
+for (const field of Object.keys(filters)) {
+  document.getElementById(`filter-${field}`).addEventListener("click", e => {
+    const btn = e.target.closest(".legend-item");
+    if (!btn) return;
+    const picked = filters[field], value = btn.dataset.value;
+    if (!value) picked.clear();
+    else if (picked.has(value)) picked.delete(value);
+    else picked.add(value);
+    renderFilters();
+    renderLegend();
+    draw();
+  });
 }
 
 // "12 of 7962 cards" while a search or legend entry is active; hidden otherwise.
 function updateTally() {
   const tally = document.getElementById("tally");
-  tally.hidden = !focus;
-  if (!focus) return;
+  tally.hidden = !focus && !filtering();
+  if (tally.hidden) return;
   let count = 0;
   for (let i = 0; i < data.cards.length; i++) if (isFocused(i)) count++;
   tally.textContent = `${count} of ${data.cards.length} cards`;
@@ -296,7 +371,8 @@ searchInput.addEventListener("input", () => {
 searchInput.addEventListener("keydown", e => {
   if (e.key !== "Enter") return;
   const q = searchInput.value.trim().toLowerCase();
-  const matches = data.cards.map((c, i) => i).filter(i => data.cards[i].name.toLowerCase().includes(q));
+  const matches = data.cards.map((c, i) => i)
+    .filter(i => data.cards[i].name.toLowerCase().includes(q) && isFocused(i));  // respects the type filter
   if (matches.length) zoomTo(matches);
 });
 
@@ -466,7 +542,7 @@ function select(i) {
       <img src="/card/${encodeURIComponent(card.card_id)}?size=low" alt="">
       <div><div class="name">${escapeHtml(card.name)}</div>
         <div class="meta">${escapeHtml(card.set_name)} · ${escapeHtml(card.card_id)}</div>
-        <div class="meta">${escapeHtml(card.category)} · ${escapeHtml(card.rarity)}</div></div>
+        <div class="meta">${escapeHtml(typesOf(card).join(" / "))} · ${escapeHtml(card.rarity)} · ${escapeHtml(card.color)}</div></div>
     </div>
     <p class="kept">${kept}/${neighbors.length} of its nearest neighbours in 256-d are also
       among its ${neighbors.length} closest points in this ${layout === "pca" ? "PCA" : layout === "grid" ? "card wall" : "UMAP"} view.</p>
@@ -535,6 +611,7 @@ canvas.addEventListener("wheel", e => {
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   focus = null; searchInput.value = "";
+  Object.values(filters).forEach(set => set.clear()); renderFilters();
   renderLegend(); select(-1);
 });
 
@@ -544,7 +621,7 @@ function showTooltip(i, x, y) {
   if (i !== tooltipCard) tooltip.innerHTML = `<img src="/card/${encodeURIComponent(c.card_id)}?size=low" alt="">
     <div><div class="name">${escapeHtml(c.name)}</div>
       <div class="meta">${escapeHtml(c.set_name)} · ${escapeHtml(c.card_id)}</div>
-      <div class="meta">${escapeHtml(c.category)} · ${escapeHtml(c.rarity)}</div></div>`;
+      <div class="meta">${escapeHtml(typesOf(c).join(" / "))} · ${escapeHtml(c.rarity)} · ${escapeHtml(c.color)}</div></div>`;
   tooltipCard = i;
   tooltip.hidden = false;
   const r = tooltip.getBoundingClientRect();

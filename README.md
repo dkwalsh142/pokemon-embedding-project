@@ -154,11 +154,14 @@ python -m embed.visualize       # projects the cached index; writes checkpoints/
 
 **UMAP** connects each card to its nearest look-alikes in 256-d, then lays the cards out in 2-D so connected cards stay together and unconnected ones are pushed apart. **PCA** is the linear baseline (its top 2 components keep only ~6% of the variance, which is why it looks like one blob). **Card wall** snaps the UMAP layout onto a grid so every card gets its own tile.
 
-To keep ~8k points readable, the page:
+To keep ~20k points readable, the page:
 - draws small translucent dots, so dense areas look darker;
 - switches to card thumbnails when you zoom in;
 - labels regions with what is over-represented there (e.g. "Illustration rare 57% · sv 71%");
 - dims everything except the legend entry or search you pick.
+- has a type filter (Fire, Water, Item, Supporter, …) in the sidebar that combines with the colouring, legend and search; dual-type cards match either type.
+- has a dominant-colour filter and colouring: each card's most common hue (red, blue, …, or white/gray/black when it is mostly uncoloured), measured on the scan with its border trimmed off. Useful for checking whether the embedding groups cards by overall colour rather than identity.
+- has a layout filter and colouring (regular, ex/V/GX rule box, full art, illustration art, rainbow/gold, other special), derived from the TCGdex rarity since TCGdex has no full-art field.
 
 Clicking a card shows its 10 nearest neighbours in the full 256-d space (what retrieval actually compares) and how many of them stayed close in 2-D.
 
