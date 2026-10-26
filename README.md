@@ -52,11 +52,12 @@ Card images and text come from [TCGdex](https://tcgdex.dev), which is free and n
 |---|---|
 | TCGdex download script | ✅ Done |
 | Stage 1 classifier embedding (code, augmentations, retrieval eval) | ✅ Code done, full training run next |
-| Detection, perspective warp, crop check, "played" logic | ⏳ Next |
-| Reference index and evaluation on real photos | Planned |
+| Detection, perspective warp, crop check, "played" logic | ✅ Works on a dark mat; weak on white backgrounds |
+| Reference index and evaluation on real photos | 🟡 Index done; 17/17 top-1 on a first handful of real photos |
 | Stage 2 triplet fine-tuning, compared with Stage 1 | Planned |
 | OCR tie-breaker | Planned |
-| Fusion and Streamlit UI | Planned |
+| Live webcam UI (browser + Flask) | ✅ First version, embedding only |
+| Fusion of embedding and OCR scores | Planned |
 
 ## Getting started
 
@@ -95,12 +96,14 @@ Downloads are cached in `data/tcgdex/`, so re-running only fetches what is missi
 
 ```
 data_tools/   TCGdex download and sanity-check scripts
-embed/        embedding model, camera augmentations, Stage 1 training, retrieval eval
+embed/        embedding model, camera augmentations, Stage 1 training, retrieval eval, reference index
+detect/       card detection, perspective warp, crop QC, "played" tracker
+app/          live webcam demo: recognizer (frame -> predictions), Flask server, browser page
 data/         downloaded data (not committed)
 checkpoints/  trained weights (not committed)
 ```
 
-Planned: `detect/`, `ocr/`, `fuse/` and `app/` for the remaining pipeline stages.
+Planned: `ocr/` and `fuse/` for the remaining pipeline stages.
 
 ### Train the Stage 1 embedding
 
@@ -114,6 +117,30 @@ python -m embed.train_stage1
 # Picture of each camera augmentation on its own (data/augment_effects.png)
 python -m embed.augment --per-effect --cards 3
 ```
+
+### Live webcam demo
+
+The browser reads the webcam and sends frames to a small Flask server, which runs detection and retrieval on the GPU. Each card is outlined with its best match, and once a card has stayed still for a few frames it pops into the "Played cards" sidebar with its top-3 candidates.
+
+```bash
+# Optional: embed every catalog card up front (otherwise the server does it on first start)
+python -m embed.index
+
+# Check the recognizer on a still photo
+python -m app.recognizer photo.jpg
+
+# Start the server, then open http://localhost:8501 and allow camera access
+python -m app.server
+```
+
+You can also drag photos onto the page (or use "Identify images…"). Every card found is boxed and listed in the sidebar with its crop, best match and top-3. To fix or add boxes, click empty space to add a card-shaped box (locked to the 63:88 card ratio). Drag a box to move it, drag ↻ to rotate it, or drag a corner to resize it. Each box is identified again when you let go. × or Delete removes a box.
+
+When running on a remote machine over SSH, forward the port (VS Code does this automatically, or `ssh -L 8501:localhost:8501 host`). Open the page as `http://localhost:8501`, not by IP address: browsers only allow camera access on localhost or https.
+
+Known limitations:
+- Detection expects a dark, plain surface. On white paper it misses most cards.
+- Cards with no TCGdex image (for example the plain basic energies) are not in the index and get matched confidently to a look-alike. The collector-number OCR step should fix this.
+- Scores below 0.6 are flagged "uncertain". OCR is not built yet, so the combined score is the embedding score.
 
 ## Evaluation
 

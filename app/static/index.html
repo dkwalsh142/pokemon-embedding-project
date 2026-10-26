@@ -1,0 +1,782 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card Spotter</title>
+<style>
+  :root {
+    --bg: #111418;
+    --panel: #1a1f25;
+    --line: #2a313a;
+    --text: #e8ecf0;
+    --muted: #8a96a3;
+    --ok: #3ccf6e;
+    --bad: #ef5350;
+    --warn: #f5b942;
+    --accent: #5aa9ff;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }  /* otherwise "display: block" rules below override it */
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  select, button {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; font: inherit;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  /* one line only: a wrapping status would change the header height and shift the image */
+  #stats {
+    color: var(--muted); font-variant-numeric: tabular-nums; text-align: right;
+    flex: 1 1 150px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #stage-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; min-width: 0; }
+  #stage { position: relative; max-width: 100%; max-height: 100%; }
+  /* explicit limits (window minus header and sidebar) so the media's displayed box is exact */
+  #stage video, #stage #still {
+    display: block; border-radius: 8px; background: #000;
+    max-width: calc(100vw - 380px - 32px); max-height: calc(100vh - 90px);
+  }
+  /* placed exactly over the displayed image/video by placeOverlay() */
+  #stage canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #stage #still { cursor: crosshair; touch-action: none; user-select: none; }
+  #message { color: var(--muted); text-align: center; }
+
+  /* full-window drop target, shown while a file is dragged over the page */
+  #dropzone {
+    position: fixed; inset: 0; z-index: 10; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(17, 20, 24, .85); border: 3px dashed var(--accent);
+    font-size: 22px; color: var(--accent); pointer-events: none;
+  }
+  body.dragging #dropzone { display: flex; }
+
+  aside {
+    width: 380px; flex-shrink: 0; border-left: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; padding: 14px 16px 8px; }
+  #current { padding: 0 16px 12px; border-bottom: 1px solid var(--line); text-align: center; }
+  #current img { width: 100%; max-width: 260px; border-radius: 10px; display: block; margin: 0 auto 8px; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  #current img.fresh { animation: pop .35s ease-out; }
+  #current .name { font-weight: 600; font-size: 17px; }
+  #current .set, #current .placeholder { color: var(--muted); font-size: 12px; }
+  #current .placeholder { padding: 24px 0; }
+  #events { overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+  #empty { color: var(--muted); padding: 8px 4px; }
+
+  .event {
+    position: relative;
+    display: grid; grid-template-columns: 96px 1fr; gap: 10px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+    animation: pop .35s ease-out;
+  }
+  .event.latest { border-color: var(--accent); }
+  @keyframes pop { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .event img { width: 96px; border-radius: 5px; display: block; }
+  .event .name { font-weight: 600; font-size: 15px; }
+  .event .set { color: var(--muted); font-size: 12px; }
+  .event .time { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--warn); color: #000; margin-left: 4px; vertical-align: middle; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; margin: 6px 0 2px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--ok); }
+  .event.unsure .bar > div { background: var(--warn); }
+  table { grid-column: 1 / -1; width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; text-align: right; padding: 2px 4px; }
+  th:first-child, td:first-child { text-align: left; }
+  td { padding: 2px 4px; text-align: right; border-top: 1px solid var(--line); }
+  tr.pick td { color: var(--ok); }
+
+  /* results for a dropped-in image */
+  .upload {
+    background: var(--bg); border: 1px solid var(--accent); border-radius: 10px;
+    animation: pop .35s ease-out;
+  }
+  .upload-head {
+    display: flex; gap: 10px; align-items: center; padding: 8px 10px; cursor: pointer;
+    border-bottom: 1px solid var(--line);
+  }
+  .upload-head img { width: 48px; height: 48px; object-fit: cover; border-radius: 5px; }
+  .upload-head .file { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upload-head .set { color: var(--muted); font-size: 12px; }
+  .upload .event { border: 0; border-radius: 0; animation: none; }
+  .upload .event + .event { border-top: 1px solid var(--line); }
+  .upload .event.pair { grid-template-columns: 56px 16px 96px 1fr; align-items: start; }
+  .upload .event.pair .crop { width: 56px; opacity: .9; }
+  .upload .event.pair .arrow { color: var(--muted); padding-top: 30px; text-align: center; }
+  .upload .error { color: var(--bad); padding: 10px; }
+  .upload .event[data-uid] { cursor: pointer; }
+  .upload .event.selected { background: #1d2733; box-shadow: inset 3px 0 0 var(--accent); }
+  .event .del {
+    position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0;
+    border-radius: 50%; line-height: 1; font-size: 14px; color: var(--muted);
+  }
+  .event .del:hover { color: #fff; background: var(--bad); border-color: var(--bad); }
+
+  @media (max-width: 800px) {
+    main { flex-direction: column; }
+    aside { width: auto; border-left: 0; border-top: 1px solid var(--line); max-height: 45vh; }
+    #stage video, #stage #still { max-width: calc(100vw - 32px); max-height: 50vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Card Spotter</h1>
+  <button id="pick" class="primary" title="Or drag images anywhere onto the page">Identify images…</button>
+  <input id="files" type="file" accept="image/*" multiple hidden>
+  <button id="back" hidden>Back to camera</button>
+  <select id="camera" title="Camera"></select>
+  <button id="reset">Clear log</button>
+  <span id="stats">starting…</span>
+</header>
+<main>
+  <div id="stage-wrap">
+    <div id="stage">
+      <video id="video" autoplay playsinline muted></video>
+      <img id="still" alt="" hidden draggable="false">
+      <canvas id="overlay"></canvas>
+    </div>
+    <p id="message" hidden></p>
+  </div>
+  <aside>
+    <h2>Now seeing</h2>
+    <div id="current"><p class="placeholder">No card in view</p></div>
+    <h2>Played cards &amp; identified images</h2>
+    <div id="events"><p id="empty">Put a card down and keep it still for a moment, or drop images here.</p></div>
+  </aside>
+</main>
+<div id="dropzone">Drop images to identify every card in them</div>
+
+<script>
+const MAX_SEND_WIDTH = 1280;  // webcam frames are scaled down to this before upload
+const video = document.getElementById("video");
+const still = document.getElementById("still");
+const overlay = document.getElementById("overlay");
+const grab = document.createElement("canvas");  // off-screen canvas used to encode frames
+const stats = document.getElementById("stats");
+const cameraSelect = document.getElementById("camera");
+let stream = null;
+let mode = "camera";  // "camera" = live loop running; "still" = showing a dropped-in image
+let cameraOk = false;
+
+// ---------- camera ----------
+
+async function startCamera(deviceId) {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  const video_constraints = deviceId
+    ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    : { width: { ideal: 1920 }, height: { ideal: 1080 } };
+  stream = await navigator.mediaDevices.getUserMedia({ video: video_constraints, audio: false });
+  video.srcObject = stream;
+  await video.play();
+  cameraOk = true;
+  await listCameras(stream.getVideoTracks()[0].getSettings().deviceId);
+}
+
+async function listCameras(currentId) {
+  // Device labels are only filled in after camera permission has been granted.
+  const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+  cameraSelect.innerHTML = "";
+  cams.forEach((cam, i) => {
+    const opt = new Option(cam.label || `Camera ${i + 1}`, cam.deviceId);
+    opt.selected = cam.deviceId === currentId;
+    cameraSelect.add(opt);
+  });
+}
+
+cameraSelect.onchange = () => startCamera(cameraSelect.value).catch(showError);
+
+// ---------- send a frame, draw the answer, repeat ----------
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function loop() {
+  while (true) {
+    if (mode !== "camera" || !video.videoWidth) { await sleep(100); continue; }
+    const scale = Math.min(1, MAX_SEND_WIDTH / video.videoWidth);
+    grab.width = Math.round(video.videoWidth * scale);
+    grab.height = Math.round(video.videoHeight * scale);
+    grab.getContext("2d").drawImage(video, 0, 0, grab.width, grab.height);
+    const jpeg = await new Promise(r => grab.toBlob(r, "image/jpeg", 0.85));
+
+    const t0 = performance.now();
+    try {
+      const resp = await fetch("/frame", { method: "POST", body: jpeg, headers: { "Content-Type": "image/jpeg" } });
+      if (!resp.ok) throw new Error(`server said ${resp.status}`);
+      const result = await resp.json();
+      if (mode !== "camera") continue;  // an image was dropped while this frame was in flight
+      const ms = performance.now() - t0;
+      stats.textContent = `${result.cards.length} card(s) · ${ms.toFixed(0)} ms · ${(1000 / ms).toFixed(1)} fps`;
+      drawBoxes(result);
+      showCurrent(result);
+      result.played.forEach(addEvent);
+    } catch (err) {
+      stats.textContent = `server unreachable (${err.message})`;
+      await sleep(1000);
+    }
+  }
+}
+
+// Lay the canvas exactly over the media as it appears on screen. Its drawing
+// buffer stays at the analysed image's pixel size; the browser scales it down.
+function placeOverlay() {
+  const media = mode === "still" ? still : video;
+  overlay.style.left = `${media.offsetLeft}px`;
+  overlay.style.top = `${media.offsetTop}px`;
+  overlay.style.width = `${media.offsetWidth}px`;
+  overlay.style.height = `${media.offsetHeight}px`;
+}
+window.addEventListener("resize", placeOverlay);
+still.addEventListener("load", placeOverlay);  // a dropped image has no size until it loads
+video.addEventListener("loadedmetadata", placeOverlay);
+
+function drawBoxes(result) {
+  // The canvas uses the analysed image's pixel size, so server coordinates map 1:1.
+  overlay.width = result.width;
+  overlay.height = result.height;
+  placeOverlay();
+  const ctx = overlay.getContext("2d");
+  // Size lines and text in on-screen pixels: canvas pixels per screen pixel.
+  const px = result.width / ((mode === "still" ? still : video).offsetWidth || result.width);
+  const lw = 2 * px;
+  ctx.lineWidth = lw;
+  ctx.font = `600 ${Math.round(12 * px)}px system-ui, sans-serif`;
+  for (const card of result.cards) {
+    if (card.whole_image && !card.manual) continue;  // the whole picture; nothing useful to draw
+    const colour = card.manual ? "#5aa9ff" : card.ok ? "#3ccf6e" : "#ef5350";
+    ctx.strokeStyle = colour;
+    ctx.beginPath();
+    card.corners.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+    ctx.closePath();
+    ctx.stroke();
+
+    const best = card.top[0];
+    const label = best ? `${best.name}  ${best.combined.toFixed(2)}` : card.reason;
+    const w = ctx.measureText(label).width + lw * 4;
+    const x = Math.max(0, Math.min(Math.min(...card.corners.map(p => p[0])), result.width - w));  // keep inside the image
+    const y = Math.min(...card.corners.map(p => p[1]));
+    const h = lw * 10;
+    const top = Math.max(0, y - h - lw);
+    ctx.fillStyle = "rgba(0,0,0,.7)";
+    ctx.fillRect(x, top, w, h);
+    ctx.fillStyle = colour;
+    ctx.fillText(label, x + lw * 2, top + h - lw * 3);
+  }
+}
+
+// ---------- dropped-in images ----------
+// Each dropped image is an "upload": its file (kept so edited boxes can be sent
+// again), the server's result, and its group element in the sidebar. Every card
+// box gets a uid so it can be selected, moved, rotated, resized or deleted.
+
+let currentUpload = null;  // the upload shown on the stage
+let selectedUid = null;    // the selected card box, if any
+let nextUid = 1;
+
+function showStill(upload) {
+  mode = "still";
+  currentUpload = upload;
+  selectedUid = null;
+  video.hidden = true;
+  still.hidden = false;
+  if (still.src !== upload.url) still.src = upload.url;
+  document.getElementById("message").hidden = true;
+  document.getElementById("back").hidden = !cameraOk;
+  redraw();
+}
+still.addEventListener("load", () => redraw());
+
+document.getElementById("back").onclick = () => {
+  mode = "camera";
+  selectedUid = null;
+  still.hidden = true;
+  video.hidden = false;
+  document.getElementById("back").hidden = true;
+  overlay.getContext("2d").clearRect(0, 0, overlay.width, overlay.height);
+  placeOverlay();
+};
+
+async function postIdentify(file, params) {
+  const query = params ? "?" + new URLSearchParams(params) : "";
+  const resp = await fetch("/identify" + query, {
+    method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream" },
+  });
+  if (!resp.ok) throw new Error(resp.status === 400 ? (await resp.text()).replace(/<[^>]*>/g, " ").trim().slice(-120) : `server said ${resp.status}`);
+  const result = await resp.json();
+  result.cards.forEach(c => { c.uid = nextUid++; });
+  return result;
+}
+
+const HINT = "click to add a card box · drag to move · ↻ rotates · corners resize";
+
+async function identifyFiles(files) {
+  const images = [...files].filter(f => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+  for (const file of images) {  // one at a time, so results pop in as they're ready
+    const upload = { file, url: URL.createObjectURL(file), result: null, el: null };
+    showStill(upload);
+    stats.textContent = `identifying ${file.name}…`;
+    try {
+      upload.result = await postIdentify(file);
+      if (currentUpload === upload) redraw();
+      addUpload(upload);
+      const found = upload.result.cards.filter(c => c.ok && !c.whole_image).length;
+      stats.textContent = `${file.name}: ${found} card(s) · ${HINT}`;
+    } catch (err) {
+      addUpload(upload, err.message);
+      stats.textContent = `${file.name}: failed`;
+    }
+  }
+}
+
+// ---------- card boxes: geometry (all in image pixels) ----------
+// An edited box is stored as {cx, cy, w, angle}: centre, width (the card's short
+// side) and rotation. Its height is always w * CARD_RATIO, so it stays card-shaped.
+
+const CARD_RATIO = 88 / 63;  // long side / short side of a Pokémon card
+
+const isDrawn = c => !(c.whole_image && !c.manual);  // auto whole-image matches have no box
+const isListed = c => c.ok && c.top.length;          // cards that get a sidebar row
+const centreOf = pts => [pts.reduce((t, p) => t + p[0], 0) / pts.length, pts.reduce((t, p) => t + p[1], 0) / pts.length];
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+// Corners TL, TR, BR, BL of a box (TL->TR is the card's top edge).
+function boxCorners({ cx, cy, w, angle }) {
+  const h = w * CARD_RATIO, cos = Math.cos(angle), sin = Math.sin(angle);
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]]
+    .map(([x, y]) => [cx + x * cos - y * sin, cy + x * sin + y * cos]);
+}
+
+// A detected card's corners -> an editable box (snapped to the card ratio).
+function boxFromCorners(corners) {
+  const [cx, cy] = centreOf(corners);
+  const [tl, tr, br, bl] = corners;
+  return { cx, cy, w: (dist(tl, tr) + dist(bl, br)) / 2, angle: Math.atan2(tr[1] - tl[1], tr[0] - tl[0]) };
+}
+
+function awayFrom(p, from, d) {  // move point p a distance d further from `from`
+  const dx = p[0] - from[0], dy = p[1] - from[1], n = Math.hypot(dx, dy) || 1;
+  return [p[0] + dx / n * d, p[1] + dy / n * d];
+}
+
+function insidePolygon(p, pts) {  // ray casting
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Handle positions for the selected box, `s` = image pixels per screen pixel.
+// Handles sit just outside the box; near the image's edge (where they could not be
+// seen or clicked) they flip to the opposite side or inside the box.
+function handlesOf(card, s) {
+  const { width, height } = currentUpload.result;
+  const onImage = ([x, y]) => x >= 10 * s && y >= 10 * s && x <= width - 10 * s && y <= height - 10 * s;
+  const pinToImage = ([x, y]) => [Math.min(Math.max(x, 14 * s), width - 14 * s), Math.min(Math.max(y, 14 * s), height - 14 * s)];
+  const firstOnImage = (...options) => options.find(onImage) || pinToImage(options[0]);
+  const centre = centreOf(card.corners);
+  const [a, b, c, d] = card.corners;
+  const top = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const bottom = [(c[0] + d[0]) / 2, (c[1] + d[1]) / 2];
+  const rotate = firstOnImage(awayFrom(top, centre, 34 * s), awayFrom(bottom, centre, 34 * s), awayFrom(top, centre, -34 * s));
+  const mid = dist(rotate, top) < dist(rotate, bottom) ? top : bottom;  // the edge the rotate stem attaches to
+  const del = firstOnImage(awayFrom(b, centre, 30 * s), awayFrom(a, centre, 30 * s), awayFrom(b, centre, -30 * s));
+  return { centre, mid, corners: card.corners, rotate, del };
+}
+
+// New boxes start the size of the cards already found in this image, else a quarter of it.
+function defaultBoxWidth(result) {
+  const widths = result.cards.filter(isDrawn).map(c => boxFromCorners(c.corners).w).sort((a, b) => a - b);
+  return widths.length ? widths[Math.floor(widths.length / 2)] : 0.25 * Math.min(result.width, result.height);
+}
+
+const screenToImage = () => (currentUpload?.result?.width || 1) / (still.offsetWidth || 1);  // image px per screen px
+const selectedCard = () => currentUpload?.result?.cards.find(c => c.uid === selectedUid) || null;
+
+// ---------- drawing ----------
+
+function redraw() {
+  if (mode !== "still") return;
+  const result = currentUpload?.result;
+  drawBoxes(result || { width: 1, height: 1, cards: [] });
+  const card = selectedCard();
+  if (card) drawSelection(overlay.getContext("2d"), card, screenToImage());
+}
+
+function drawSelection(ctx, card, s) {
+  const h = handlesOf(card, s);
+  ctx.save();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 3 * s;
+  ctx.setLineDash([8 * s, 5 * s]);
+  ctx.beginPath();
+  card.corners.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+  ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 2 * s;
+  ctx.beginPath(); ctx.moveTo(...h.mid); ctx.lineTo(...h.rotate); ctx.stroke();
+  // corner squares for resizing
+  ctx.fillStyle = "#ffffff";
+  for (const [x, y] of h.corners) ctx.fillRect(x - 6 * s, y - 6 * s, 12 * s, 12 * s);
+  // round buttons: rotate and delete
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const [pos, colour, glyph] of [[h.rotate, "#5aa9ff", "↻"], [h.del, "#ef5350", "×"]]) {
+    ctx.fillStyle = colour;
+    ctx.beginPath(); ctx.arc(pos[0], pos[1], 10 * s, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `700 ${Math.round(14 * s)}px system-ui, sans-serif`;
+    ctx.fillText(glyph, pos[0], pos[1] + s);
+  }
+  ctx.restore();
+}
+
+// ---------- select / add / delete / identify ----------
+
+function selectCard(uid) {
+  selectedUid = uid;
+  if (currentUpload?.el) {
+    currentUpload.el.querySelectorAll(".event.selected").forEach(e => e.classList.remove("selected"));
+    const row = currentUpload.el.querySelector(`.event[data-uid="${uid}"]`);
+    if (row) { row.classList.add("selected"); row.scrollIntoView({ block: "nearest" }); }
+  }
+  redraw();
+}
+
+function addBox(upload, p) {
+  const box = { cx: p[0], cy: p[1], w: defaultBoxWidth(upload.result), angle: 0 };
+  const card = {
+    uid: nextUid++, box, corners: boxCorners(box), ok: false, reason: "identifying…",
+    top: [], manual: true, whole_image: false, note: "added box",
+  };
+  upload.result.cards.push(card);
+  selectCard(card.uid);
+  return card;
+}
+
+function deleteCard(upload, uid) {
+  upload.result.cards = upload.result.cards.filter(c => c.uid !== uid);
+  upload.el?.querySelector(`.event[data-uid="${uid}"]`)?.remove();
+  if (selectedUid === uid) selectedUid = null;
+  refreshSummary(upload);
+  if (currentUpload === upload) redraw();
+  stats.textContent = "box deleted";
+}
+
+// Identify a box's current corners and update its row. `seq` makes sure a slow
+// reply for an older position never overwrites a newer edit.
+async function reidentify(upload, card) {
+  const seq = card.seq = (card.seq || 0) + 1;
+  stats.textContent = "identifying…";
+  try {
+    const corners = card.corners.flat().map(Math.round).join(",");
+    const [found] = (await postIdentify(upload.file, { corners })).cards;
+    if (seq !== card.seq || !upload.result.cards.includes(card)) return;  // edited again, or deleted
+    const { box, corners: mine, note } = card;
+    Object.assign(card, found, { uid: card.uid, box, corners: mine, note: note === "added box" ? note : "edited box" });
+    updateRow(upload, card);
+    refreshSummary(upload);
+    if (currentUpload === upload) { redraw(); if (selectedUid === card.uid) selectCard(card.uid); }
+    stats.textContent = `${card.top[0].name} ${card.top[0].combined.toFixed(2)}`;
+  } catch (err) {
+    stats.textContent = `identify failed: ${err.message}`;
+  }
+}
+
+// Change a box (move / rotate / resize) and redraw. Auto-detected boxes become
+// ratio-locked boxes the first time they are edited.
+function editBox(card, change) {
+  card.box ||= boxFromCorners(card.corners);
+  Object.assign(card.box, change(card.box));
+  card.corners = boxCorners(card.box);
+  card.manual = true;
+  redraw();
+}
+
+// ---------- mouse: click to add, drag to move, ↻ to rotate, corners to resize ----------
+
+let gesture = null;  // what the current drag is doing: {kind, card, start, box0, moved}
+
+function imagePoint(e) {
+  const s = screenToImage();
+  return [e.offsetX * s, e.offsetY * s];
+}
+
+// What is under point p? Returns {kind, card} or null. Handles of the selected box win.
+function hitTest(p) {
+  const s = screenToImage();
+  const near = (q, r) => dist(p, q) <= r * s;
+  const card = selectedCard();
+  if (card) {
+    const h = handlesOf(card, s);
+    if (near(h.del, 13)) return { kind: "delete", card };
+    if (near(h.rotate, 13)) return { kind: "rotate", card };
+    if (h.corners.some(q => near(q, 11))) return { kind: "resize", card };
+  }
+  const hit = [...(currentUpload?.result?.cards || [])].reverse().find(c => isDrawn(c) && insidePolygon(p, c.corners));
+  return hit ? { kind: "move", card: hit } : null;
+}
+
+const CURSORS = { delete: "pointer", rotate: "grab", resize: "nwse-resize", move: "move" };
+
+still.addEventListener("pointerdown", e => {
+  const upload = currentUpload;
+  if (!upload?.result) return;  // wait until the image has been analysed
+  e.preventDefault();
+  const p = imagePoint(e);
+  let hit = hitTest(p);
+
+  if (hit?.kind === "delete") { deleteCard(upload, hit.card.uid); return; }
+  if (!hit) {
+    // empty space: add a card box here; keep holding to drag it into place
+    hit = { kind: "move", card: addBox(upload, p), isNew: true };
+  }
+  if (hit.card.uid !== selectedUid) selectCard(hit.card.uid);
+  still.setPointerCapture(e.pointerId);
+  hit.card.box ||= boxFromCorners(hit.card.corners);
+  gesture = { ...hit, start: p, box0: { ...hit.card.box }, moved: false };
+  if (!hit.isNew) stats.textContent = HINT;
+});
+
+still.addEventListener("pointermove", e => {
+  if (!currentUpload?.result) return;
+  const p = imagePoint(e);
+  if (!gesture) {  // just hovering: show what a drag would do
+    still.style.cursor = CURSORS[hitTest(p)?.kind] || "crosshair";
+    return;
+  }
+  const g = gesture, b0 = g.box0, c = [b0.cx, b0.cy];
+  if (!g.moved && dist(p, g.start) < 3 * screenToImage()) return;  // ignore tiny jitter on a click
+  g.moved = true;
+  if (g.kind === "move") {
+    editBox(g.card, () => ({ cx: b0.cx + p[0] - g.start[0], cy: b0.cy + p[1] - g.start[1] }));
+  } else if (g.kind === "rotate") {
+    const turn = Math.atan2(p[1] - c[1], p[0] - c[0]) - Math.atan2(g.start[1] - c[1], g.start[0] - c[0]);
+    editBox(g.card, () => ({ angle: b0.angle + turn }));
+    stats.textContent = `rotation ${Math.round(((b0.angle + turn) * 180 / Math.PI) % 360)}°`;
+  } else if (g.kind === "resize") {  // scale about the centre, so the ratio is kept
+    editBox(g.card, () => ({ w: Math.max(20 * screenToImage(), b0.w * dist(p, c) / (dist(g.start, c) || 1)) }));
+  }
+});
+
+still.addEventListener("pointerup", () => {
+  const g = gesture;
+  gesture = null;
+  if (!g) return;
+  if (g.moved || g.isNew) reidentify(currentUpload, g.card);  // a plain click on a box only selects it
+});
+
+// Keyboard: arrows move (Shift = faster), [ ] rotate, - = resize, Delete removes, Esc deselects.
+let keyTimer = null;
+window.addEventListener("keydown", e => {
+  if (mode !== "still" || e.target.tagName === "SELECT") return;
+  const card = selectedCard();
+  if (!card) return;
+  const step = (e.shiftKey ? 10 : 2) * screenToImage();
+  const changes = {
+    ArrowLeft: b => ({ cx: b.cx - step }), ArrowRight: b => ({ cx: b.cx + step }),
+    ArrowUp: b => ({ cy: b.cy - step }), ArrowDown: b => ({ cy: b.cy + step }),
+    "[": b => ({ angle: b.angle - 2 * Math.PI / 180 }), "]": b => ({ angle: b.angle + 2 * Math.PI / 180 }),
+    "-": b => ({ w: b.w * 0.97 }), "=": b => ({ w: b.w * 1.03 }), "+": b => ({ w: b.w * 1.03 }),
+  };
+  if (e.key === "Escape") {
+    selectCard(null);
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    deleteCard(currentUpload, card.uid);
+  } else if (changes[e.key]) {
+    e.preventDefault();
+    editBox(card, changes[e.key]);
+    const upload = currentUpload;
+    clearTimeout(keyTimer);  // identify once the keys have been still for a moment
+    keyTimer = setTimeout(() => reidentify(upload, card), 400);
+  }
+});
+
+document.getElementById("pick").onclick = () => document.getElementById("files").click();
+document.getElementById("files").onchange = e => { identifyFiles(e.target.files); e.target.value = ""; };
+
+// Drag and drop anywhere on the page. dragenter/dragleave fire for every child
+// element, so a counter tracks whether the pointer is still over the window.
+let dragDepth = 0;
+const hasFiles = e => [...e.dataTransfer.types].includes("Files");
+window.addEventListener("dragenter", e => { if (hasFiles(e)) { dragDepth++; document.body.classList.add("dragging"); } });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+window.addEventListener("dragover", e => e.preventDefault());  // required for drop to fire
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("dragging");
+  if (e.dataTransfer.files.length) identifyFiles(e.dataTransfer.files);
+});
+
+// ---------- sidebar ----------
+
+// "Now seeing": the most confident card in the latest frame, shown straight away
+// (no waiting for it to count as played). Cleared only after a few empty frames
+// so it doesn't flicker when detection misses a single frame.
+let shownCardId = null;
+let emptyFrames = 0;
+
+function showCurrent(result) {
+  const current = document.getElementById("current");
+  const seen = result.cards.filter(c => c.ok && c.top.length).map(c => c.top[0]);
+  if (!seen.length) {
+    if (++emptyFrames >= 5 && shownCardId !== null) {
+      shownCardId = null;
+      current.innerHTML = '<p class="placeholder">No card in view</p>';
+    }
+    return;
+  }
+  emptyFrames = 0;
+  const best = seen.reduce((a, b) => (b.combined > a.combined ? b : a));
+  if (best.card_id !== shownCardId) {  // only swap the image when the card changes
+    shownCardId = best.card_id;
+    current.innerHTML = `
+      <img class="fresh" src="/card/${encodeURIComponent(best.card_id)}" alt="${escapeHtml(best.name)}">
+      <div class="name"></div>
+      <div class="set">${escapeHtml(best.set_name)} · ${escapeHtml(best.number)}</div>
+      <div class="set score"></div>`;
+  }
+  current.querySelector(".name").innerHTML = escapeHtml(best.name)
+    + (best.combined < 0.6 ? '<span class="badge">uncertain</span>' : "");
+  current.querySelector(".score").textContent =
+    `confidence ${best.combined.toFixed(2)}` + (seen.length > 1 ? ` · ${seen.length} cards in view` : "");
+}
+
+// One card's guess: reference scan, name, confidence bar, and the top-K table.
+// `crop` (optional) is the image region that was matched, shown to the left.
+// `uid` (optional) links the row to a box on a dropped image and adds a delete button.
+function guessHtml(top, { crop = null, note = "", uid = null } = {}) {
+  const best = top[0];
+  const uncertain = best.combined < 0.6;
+  const rows = top.map((c, i) => `
+    <tr class="${i === 0 ? "pick" : ""}">
+      <td>${escapeHtml(c.name)} <span class="set">${escapeHtml(c.number)}</span></td>
+      <td>${c.embedding_score.toFixed(2)}</td>
+      <td>${c.ocr_available ? c.ocr_score.toFixed(2) : "—"}</td>
+      <td>${c.combined.toFixed(2)}</td>
+    </tr>`).join("");
+  return `
+    <div class="event${crop ? " pair" : ""}${uncertain ? " unsure" : ""}"${uid !== null ? ` data-uid="${uid}"` : ""}>
+      ${uid !== null ? '<button class="del" title="Delete this box">×</button>' : ""}
+      ${crop ? `<img class="crop" src="${crop}" alt="matched region"><div class="arrow">→</div>` : ""}
+      <img src="/card/${encodeURIComponent(best.card_id)}" alt="${escapeHtml(best.name)}">
+      <div>
+        <div class="name">${escapeHtml(best.name)}${uncertain ? '<span class="badge">uncertain</span>' : ""}</div>
+        <div class="set">${escapeHtml(best.set_name)} · ${escapeHtml(best.number)}</div>
+        <div class="bar"><div style="width:${Math.max(0, best.combined) * 100}%"></div></div>
+        <div class="set">confidence ${best.combined.toFixed(2)}</div>
+        ${note ? `<div class="time">${escapeHtml(note)}</div>` : ""}
+      </div>
+      <table>
+        <tr><th>Top candidates</th><th>embed</th><th>OCR</th><th>combined</th></tr>
+        ${rows}
+      </table>
+    </div>`;
+}
+
+function addEvent(ev) {
+  clearEmpty();
+  const wrap = document.createElement("div");
+  wrap.innerHTML = guessHtml(ev.top, { note: `played ${new Date(ev.time * 1000).toLocaleTimeString()}` });
+  const el = wrap.firstElementChild;
+  el.classList.add("latest");
+  document.getElementById("events").prepend(el);
+}
+
+const rowHtml = card => guessHtml(card.top, { crop: card.crop, note: card.note || "", uid: card.uid });
+
+// Replace a card's sidebar row, or add one just under the image's header.
+function updateRow(upload, card) {
+  if (!upload.el || !isListed(card)) return;
+  const existing = upload.el.querySelector(`.event[data-uid="${card.uid}"]`);
+  if (existing) existing.outerHTML = rowHtml(card);
+  else upload.el.querySelector(".upload-head").insertAdjacentHTML("afterend", rowHtml(card));
+}
+
+function refreshSummary(upload) {
+  if (!upload.el || !upload.result) return;
+  const cards = upload.result.cards;
+  const listed = cards.filter(isListed);
+  const dropped = cards.filter(c => !c.ok).length;
+  upload.el.querySelector(".upload-head .set").textContent =
+    listed.length === 0 ? "no cards found"
+    : listed.length === 1 && listed[0].whole_image && !listed[0].manual ? "no card outline found · matched the whole image"
+    : `${listed.length} card(s) identified` + (dropped ? ` · ${dropped} dropped by QC` : "");
+}
+
+function addUpload(upload, error) {
+  clearEmpty();
+  const el = document.createElement("div");
+  el.className = "upload";
+  el.innerHTML = `
+    <div class="upload-head" title="Show this image">
+      <img src="${upload.url}" alt="">
+      <div style="min-width:0">
+        <div class="file">${escapeHtml(upload.file.name)}</div>
+        <div class="set"></div>
+      </div>
+    </div>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : upload.result.cards.filter(isListed).map(rowHtml).join("")}`;
+  // One click handler for the whole group: header shows the image, a row selects
+  // its box, a row's × deletes it.
+  el.addEventListener("click", e => {
+    const row = e.target.closest(".event[data-uid]");
+    if (currentUpload !== upload) showStill(upload);
+    if (!row) return;
+    const uid = Number(row.dataset.uid);
+    if (e.target.closest(".del")) deleteCard(upload, uid);
+    else selectCard(uid);
+  });
+  upload.el = el;
+  refreshSummary(upload);
+  document.getElementById("events").prepend(el);
+}
+
+function clearEmpty() {
+  document.getElementById("empty")?.remove();
+  document.querySelectorAll(".event.latest").forEach(e => e.classList.remove("latest"));
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+document.getElementById("reset").onclick = async () => {
+  await fetch("/reset", { method: "POST" });
+  document.getElementById("events").innerHTML = '<p id="empty">Put a card down and keep it still for a moment, or drop images here.</p>';
+  document.getElementById("current").innerHTML = '<p class="placeholder">No card in view</p>';
+  shownCardId = null;
+};
+
+function showError(err) {
+  // No camera is not fatal: dropping images still works.
+  const msg = document.getElementById("message");
+  msg.hidden = false;
+  video.hidden = true;
+  msg.textContent = window.isSecureContext
+    ? `Could not open the camera (${err.message}). You can still drag images in.`
+    : "Camera access needs a secure page: open this as http://localhost:<port>, not by IP address. You can still drag images in.";
+  stats.textContent = "no camera";
+}
+
+startCamera().then(loop).catch(showError);
+</script>
+</body>
+</html>

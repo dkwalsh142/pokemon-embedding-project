@@ -5,3 +5,5 @@ numpy
 torch
 torchvision
 timm
+opencv-python-headless
+flask
