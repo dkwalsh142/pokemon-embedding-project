@@ -73,10 +73,12 @@ pip install -r requirements.txt
 # Specific sets (IDs from https://api.tcgdex.net/v2/en/sets)
 python -m data_tools.download_tcgdex --sets sv01 base1
 
-# Every Scarlet & Violet set, training images only (the high-res PNGs are only needed for OCR)
-python -m data_tools.download_tcgdex --prefix sv --no-high
+# Every Scarlet & Violet set (low-res images only, the default)
+python -m data_tools.download_tcgdex --prefix sv
 
-# Every set (several GB; add --no-high to skip the high-res PNGs)
+# Add --high to also fetch the high-res PNGs (several GB for every set)
+
+# Every set
 python -m data_tools.download_tcgdex --all
 
 # Summary plus a grid of sample cards (data/tcgdex/sample_grid.png)
@@ -141,6 +143,26 @@ Known limitations:
 - Detection expects a dark, plain surface. On white paper it misses most cards.
 - Cards with no TCGdex image (for example the plain basic energies) are not in the index and get matched confidently to a look-alike. The collector-number OCR step should fix this.
 - Scores below 0.6 are flagged "uncertain". OCR is not built yet, so the combined score is the embedding score.
+
+### Embedding map
+
+A 2-D picture of the 256-d embedding space, served by the demo app at `http://localhost:8501/embeddings`.
+
+```bash
+python -m embed.visualize       # projects the cached index; writes checkpoints/embedding_map.json
+```
+
+**UMAP** connects each card to its nearest look-alikes in 256-d, then lays the cards out in 2-D so connected cards stay together and unconnected ones are pushed apart. **PCA** is the linear baseline (its top 2 components keep only ~6% of the variance, which is why it looks like one blob). **Card wall** snaps the UMAP layout onto a grid so every card gets its own tile.
+
+To keep ~8k points readable, the page:
+- draws small translucent dots, so dense areas look darker;
+- switches to card thumbnails when you zoom in;
+- labels regions with what is over-represented there (e.g. "Illustration rare 57% · sv 71%");
+- dims everything except the legend entry or search you pick.
+
+Clicking a card shows its 10 nearest neighbours in the full 256-d space (what retrieval actually compares) and how many of them stayed close in 2-D.
+
+How to read it: which cards sit next to each other is meaningful. The distance between far-apart clusters, the size of a cluster, and empty gaps are not.
 
 ## Evaluation
 

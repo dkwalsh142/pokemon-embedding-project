@@ -9,6 +9,7 @@ score is just the embedding score. The fields are already there for the fusion s
 
 Usage:
     python -m app.recognizer photo.jpg        # print the top-3 for each card in a still photo
+    python -m app.recognizer photo.jpg --normalize   # same, after normalizing the lighting
 """
 
 import time
@@ -18,6 +19,7 @@ import numpy as np
 import torch
 
 from detect.cards import MAX_AREA_FRAC, detect_cards, order_corners, warp
+from detect.lighting import normalize_lighting
 from detect.played import PlayedTracker
 from embed.evaluate import embed_all
 from embed.index import image_to_uint8, load_embedder, load_or_build_index
@@ -165,11 +167,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("image")
     parser.add_argument("--ckpt", default="checkpoints/stage1/embedder.pt")
+    parser.add_argument("--normalize", action="store_true", help="normalize lighting first (detect/lighting.py)")
     args = parser.parse_args()
 
     frame = cv2.imread(args.image)
     if frame is None:
         raise SystemExit(f"could not read {args.image}")
+    if args.normalize:
+        frame = normalize_lighting(frame)
     for i, card in enumerate(Recognizer(args.ckpt).identify(frame)):
         if not card["ok"]:
             print(f"card {i}: dropped ({card['reason']})")

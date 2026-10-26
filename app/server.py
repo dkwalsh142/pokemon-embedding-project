@@ -24,8 +24,10 @@ import numpy as np
 from flask import Flask, abort, jsonify, request, send_file
 
 from app.recognizer import Recognizer
+from detect.lighting import lighting_gains
 
 STATIC = Path(__file__).parent / "static"
+EMBEDDING_MAP = Path("checkpoints/embedding_map.json")
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024  # full-res phone photos are a few MB
@@ -44,9 +46,11 @@ def frame():
     image = cv2.imdecode(np.frombuffer(request.get_data(), np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         abort(400, "body must be a JPEG or PNG image")
+    image, gains = maybe_normalize(image)
     with model_lock:
         result = recognizer.process(image)
     result["width"], result["height"] = image.shape[1], image.shape[0]
+    result["gains"] = gains
     return jsonify(result)
 
 
@@ -61,6 +65,7 @@ def identify():
     image = cv2.imdecode(np.frombuffer(request.get_data(), np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         abort(400, "could not read the image (JPEG, PNG or WebP; not HEIC)")
+    image, gains = maybe_normalize(image)  # before cropping a drawn box, so the whole scene sets the white balance
 
     if "corners" in request.args:
         try:
@@ -74,7 +79,7 @@ def identify():
         for card in cards:
             card["manual"] = True
             card["crop"] = crop_data_url(card["crop"])
-        return jsonify(cards=cards, width=image.shape[1], height=image.shape[0])
+        return jsonify(cards=cards, width=image.shape[1], height=image.shape[0], gains=gains)
 
     x0 = y0 = 0
     region = image
@@ -94,7 +99,20 @@ def identify():
         card["manual"] = region is not image
         card["corners"] = [[px + x0, py + y0] for px, py in card["corners"]]  # back to full-image pixels
         card["crop"] = crop_data_url(card["crop"])
-    return jsonify(cards=cards, width=image.shape[1], height=image.shape[0])
+    return jsonify(cards=cards, width=image.shape[1], height=image.shape[0], gains=gains)
+
+
+def maybe_normalize(image):
+    """?normalize=1: white-balance and expose the whole image before detection and matching.
+
+    Returns (image, gains). gains is [R, G, B] (or None when off), so the page can apply
+    the same correction to what it displays.
+    """
+    if request.args.get("normalize") != "1":
+        return image, None
+    gains = lighting_gains(image)
+    corrected = np.clip(image.astype(np.float32) * gains, 0, 255).astype(np.uint8)
+    return corrected, [round(float(g), 3) for g in gains[::-1]]  # BGR -> RGB
 
 
 def crop_data_url(crop_rgb):
@@ -105,12 +123,30 @@ def crop_data_url(crop_rgb):
 
 @app.get("/card/<card_id>")
 def card_image(card_id):
-    """Clean reference scan for a card. The path comes from the catalog, never from the URL."""
+    """Clean reference scan for a card. The path comes from the catalog, never from the URL.
+
+    ?size=low returns the small scan (~20 KB), for pages that show hundreds of thumbnails.
+    """
     row = recognizer.rows_by_id.get(card_id)
     if row is None:
         abort(404)
+    if request.args.get("size") == "low":
+        return send_file(data_dir / row["low_path"], max_age=86400)
     high = row["high_path"] and data_dir / row["high_path"]
     return send_file(high if high and high.exists() else data_dir / row["low_path"])
+
+
+@app.get("/embeddings")
+def embeddings_page():
+    return send_file(STATIC / "embeddings.html")
+
+
+@app.get("/embeddings.json")
+def embeddings_map():
+    """2-D maps of the index, precomputed by embed/visualize.py (UMAP is too slow per request)."""
+    if not EMBEDDING_MAP.exists():
+        abort(404, "no embedding map yet; run: python -m embed.visualize")
+    return send_file(EMBEDDING_MAP.resolve(), mimetype="application/json")
 
 
 @app.post("/reset")

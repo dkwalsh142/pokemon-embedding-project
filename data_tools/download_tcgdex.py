@@ -6,7 +6,8 @@ crash the run.
 
 Usage:
     python -m data_tools.download_tcgdex --sets sv01 sv02
-    python -m data_tools.download_tcgdex --prefix sv --no-high
+    python -m data_tools.download_tcgdex --prefix sv
+    python -m data_tools.download_tcgdex --sets sv01 --high   # also the high-res PNGs
     python -m data_tools.download_tcgdex --all
 """
 
@@ -22,6 +23,7 @@ from PIL import Image
 from tqdm import tqdm
 
 API = "https://api.tcgdex.net/v2/en"
+DIGITAL_SERIES = {"tcgp"}  # Pokémon TCG Pocket: mobile-game cards that never appear on a real mat
 
 CATALOG_COLUMNS = [
     "card_id", "set_id", "set_name", "local_id", "set_card_count",
@@ -108,6 +110,9 @@ class Downloader:
     def process_set(self, set_id):
         """Download every card in a set. Returns a list of (card_id, reason) skips."""
         set_data = self.get_json(f"{API}/sets/{set_id}", self.out / "sets" / f"{set_id}.json")
+        if set_data.get("serie", {}).get("id") in DIGITAL_SERIES:
+            log.info("%s (%s): skipped, digital-only cards", set_id, set_data.get("name"))
+            return []
         cards = set_data.get("cards", [])
         skipped = []
         for brief in tqdm(cards, desc=set_id, unit="card"):
@@ -173,17 +178,17 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--sets", nargs="+", help="TCGdex set IDs, e.g. sv01 base1")
     group.add_argument("--prefix", help="every set whose id starts with this, e.g. sv")
-    group.add_argument("--all", action="store_true", help="download every set in the catalog")
+    group.add_argument("--all", action="store_true", help="download every physical set (TCG Pocket is skipped)")
     parser.add_argument("--out", default="data/tcgdex", help="output folder (default: data/tcgdex)")
     parser.add_argument("--sleep", type=float, default=0.2, help="seconds to wait after each request")
-    parser.add_argument("--no-high", action="store_true", help="skip the high-res PNG images")
+    parser.add_argument("--high", action="store_true", help="also download the high-res PNG images (off by default)")
     parser.add_argument("-v", "--verbose", action="store_true", help="log every skipped card")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(message)s")
 
-    dl = Downloader(args.out, args.sleep, get_high=not args.no_high)
+    dl = Downloader(args.out, args.sleep, get_high=args.high)
     all_sets = dl.get_json(f"{API}/sets", dl.out / "sets.json")
     known_ids = {s["id"] for s in all_sets}
 

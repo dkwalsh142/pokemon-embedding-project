@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embedding Map</title>
+<style>
+  :root {
+    --bg: #111418;
+    --panel: #1a1f25;
+    --line: #2a313a;
+    --text: #e8ecf0;
+    --muted: #8a96a3;
+    --accent: #5aa9ff;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  select, button, input {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; font: inherit;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .seg { display: flex; }
+  .seg button { border-radius: 0; margin-left: -1px; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .seg button.on { border-color: var(--accent); color: var(--accent); position: relative; }
+  .navlink { color: var(--accent); text-decoration: none; }
+  .navlink:hover { text-decoration: underline; }
+  #search { width: 200px; }
+  #tally { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #stats { color: var(--muted); flex: 1 1 150px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #wrap { flex: 1; position: relative; min-width: 0; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #map.dragging { cursor: grabbing; }
+  #hint { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px; pointer-events: none; }
+  #message { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 24px; }
+
+  #tooltip {
+    position: fixed; z-index: 5; pointer-events: none; display: flex; gap: 10px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .5); max-width: 320px;
+  }
+  #tooltip img { width: 90px; border-radius: 4px; }
+  #tooltip .name { font-weight: 600; }
+  #tooltip .meta { color: var(--muted); font-size: 12px; }
+
+  aside { width: 320px; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 12px 14px; }
+  aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 6px 0 8px; }
+  .legend-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: none; border: 1px solid transparent; padding: 3px 6px; border-radius: 6px;
+  }
+  .legend-item:hover { border-color: var(--line); }
+  .legend-item.on { border-color: var(--accent); }
+  .legend-item.off { opacity: .4; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .legend-item .count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
+
+  #selected .card { display: flex; gap: 10px; align-items: flex-start; }
+  #selected .card img { width: 110px; border-radius: 6px; }
+  #selected .name { font-weight: 600; font-size: 15px; }
+  #selected .meta { color: var(--muted); font-size: 12px; }
+  #selected .kept { margin: 10px 0 6px; }
+  .neighbors { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .neighbors button { padding: 0; border: 1px solid var(--line); background: none; border-radius: 5px; overflow: hidden; }
+  .neighbors button:hover { border-color: var(--accent); }
+  .neighbors img { display: block; width: 100%; }
+
+  @media (max-width: 800px) {
+    main { flex-direction: column; }
+    aside { width: auto; border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="navlink">← Card Spotter</a>
+  <h1>Embedding map</h1>
+  <div class="seg" id="layouts">
+    <button data-layout="umap" title="Nearest look-alikes stay together; distances between far clusters mean little">UMAP</button>
+    <button data-layout="pca" title="Best flat (linear) projection: the baseline">PCA</button>
+    <button data-layout="grid" title="UMAP layout snapped to a grid: one tile per card">Card wall</button>
+  </div>
+  <label>Colour by
+    <select id="color">
+      <option value="era">Era</option>
+      <option value="rarity">Rarity</option>
+      <option value="category">Category</option>
+      <option value="set_name">Set</option>
+    </select>
+  </label>
+  <input id="search" list="names" placeholder="Find a card…" autocomplete="off">
+  <datalist id="names"></datalist>
+  <span id="tally" hidden></span>
+  <button id="resetView">Reset view</button>
+  <span id="stats">loading…</span>
+</header>
+<main>
+  <div id="wrap">
+    <canvas id="map"></canvas>
+    <div id="message">Loading embedding map…</div>
+    <div id="hint">Scroll to zoom · drag to pan · click a card to see its 10 nearest neighbours · Esc clears</div>
+  </div>
+  <aside>
+    <div id="selected" hidden></div>
+    <h2>Legend</h2>
+    <p class="note">Click an entry to highlight it and dim everything else.</p>
+    <div id="legend"></div>
+  </aside>
+</main>
+<div id="tooltip" hidden></div>
+
+<script>
+const THUMB_MAX_VISIBLE = 400;  // scatter views: draw card images once this few points are on screen
+const THUMB_MIN_TILE_PX = 22;   // card wall: draw card images once a tile is this wide
+const CARD_ASPECT = 88 / 63;
+const PALETTE = ["#5aa9ff", "#f5b942", "#3ccf6e", "#ef5350", "#b47cff", "#4dd0e1",
+                 "#ff8a65", "#f06292", "#c0ca33", "#90a4ae"];
+const OTHER_COLOR = "#5c6670";
+const DIM_COLOR = "rgba(120, 130, 140, 0.12)";
+
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+const tooltip = document.getElementById("tooltip");
+const stats = document.getElementById("stats");
+const searchInput = document.getElementById("search");
+
+let data = null;          // contents of /embeddings.json
+let layouts = {};         // name -> Float32Array of world x,y pairs
+let pos = null;           // positions currently drawn (animated between layouts)
+let layout = ["umap", "pca", "grid"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "umap";  // e.g. /embeddings#grid
+let colorField = "era";
+let colors = [];          // per-card colour for the current colour field
+let legend = [];          // [{value, color, count}]
+let focus = null;         // {field, value} from the legend, or {query} from search; null = all bright
+let selected = -1;        // card index whose neighbours are shown
+let hovered = -1;
+let view = { scale: 1, x: 0, y: 0 };  // screen = world * scale + offset
+const thumbs = new Map(); // card_id -> Image (lazy-loaded, cached)
+
+// ---------- loading ----------
+
+async function load() {
+  const resp = await fetch("/embeddings.json");
+  if (!resp.ok) {
+    document.getElementById("message").textContent =
+      "No embedding map yet. On the server run: python -m embed.visualize";
+    stats.textContent = "";
+    return;
+  }
+  data = await resp.json();
+  document.getElementById("message").hidden = true;
+
+  layouts.umap = normalize(data.umap);
+  layouts.pca = normalize(data.pca);
+  layouts.grid = gridWorld(data.grid);
+  pos = Float32Array.from(layouts[layout]);
+
+  const names = [...new Set(data.cards.map(c => c.name))].sort();
+  document.getElementById("names").innerHTML = names.map(n => `<option value="${escapeHtml(n)}">`).join("");
+  stats.textContent = `${data.cards.length} cards · PCA keeps ${(data.pca_explained * 100).toFixed(1)}% of the variance`;
+
+  setColorField(colorField);
+  setLayout(layout, false);
+  resize();
+}
+
+// Scale a list of [x, y] into a 1000-unit box (keeping its shape) so every layout fits the same view.
+function normalize(points) {
+  const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const size = Math.max(Math.max(...xs) - minX, Math.max(...ys) - minY);
+  const out = new Float32Array(points.length * 2);
+  points.forEach((p, i) => {
+    out[2 * i] = (p[0] - minX) / size * 1000;
+    out[2 * i + 1] = (p[1] - minY) / size * 1000;
+  });
+  return out;
+}
+
+// Grid cells -> world coordinates of each tile's centre, with card-shaped tiles.
+function gridWorld(cells) {
+  const cols = Math.max(...cells.map(c => c[0])) + 1;
+  const rows = Math.max(...cells.map(c => c[1])) + 1;
+  const tile = 1000 / Math.max(cols, rows * CARD_ASPECT);
+  const out = new Float32Array(cells.length * 2);
+  cells.forEach((c, i) => {
+    out[2 * i] = (c[0] + 0.5) * tile;
+    out[2 * i + 1] = (c[1] + 0.5) * tile * CARD_ASPECT;
+  });
+  out.tile = tile;
+  return out;
+}
+
+// ---------- layout, colour, focus ----------
+
+function setLayout(name, animate = true) {
+  layout = name;
+  document.querySelectorAll("#layouts button").forEach(b => b.classList.toggle("on", b.dataset.layout === name));
+  const from = Float32Array.from(pos), to = layouts[name];
+  if (!animate) { pos.set(to); fitView(); draw(); return; }
+  const start = performance.now(), duration = 700;
+  fitView(to);
+  function step(now) {
+    const t = Math.min(1, (now - start) / duration);
+    const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;  // ease in-out
+    for (let i = 0; i < pos.length; i++) pos[i] = from[i] + (to[i] - from[i]) * e;
+    draw();
+    if (t < 1) requestAnimationFrame(step);
+    else if (selected >= 0) select(selected);  // refresh the "kept N/10" note for the new layout
+  }
+  requestAnimationFrame(step);
+}
+
+function setColorField(field) {
+  colorField = field;
+  const counts = new Map();
+  data.cards.forEach(c => counts.set(c[field], (counts.get(c[field]) || 0) + 1));
+  let values = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const colorOf = new Map();
+  if (field === "set_name" || field === "era") {
+    // many values (150 sets, ~20 eras): spread hues around the wheel, skipping so neighbours differ
+    values.forEach(([v], i) => colorOf.set(v, `hsl(${(i * 137.5) % 360}, 65%, 60%)`));
+  } else {
+    values.slice(0, PALETTE.length - 1).forEach(([v], i) => colorOf.set(v, PALETTE[i]));
+  }
+  legend = values.map(([value, count]) => ({ value, count, color: colorOf.get(value) || OTHER_COLOR }));
+  colors = data.cards.map(c => colorOf.get(c[field]) || OTHER_COLOR);
+  if (focus && focus.field) focus = null;
+  renderLegend();
+  draw();
+}
+
+function isFocused(i) {
+  if (!focus) return true;
+  const card = data.cards[i];
+  if (focus.query) return card.name.toLowerCase().includes(focus.query);
+  return card[focus.field] === focus.value;
+}
+
+// "12 of 7962 cards" while a search or legend entry is active; hidden otherwise.
+function updateTally() {
+  const tally = document.getElementById("tally");
+  tally.hidden = !focus;
+  if (!focus) return;
+  let count = 0;
+  for (let i = 0; i < data.cards.length; i++) if (isFocused(i)) count++;
+  tally.textContent = `${count} of ${data.cards.length} cards`;
+}
+
+function renderLegend() {
+  updateTally();  // called whenever the focus changes
+  const el = document.getElementById("legend");
+  el.innerHTML = legend.map((item, i) => {
+    const on = focus && focus.field === colorField && focus.value === item.value;
+    const off = focus && !on;
+    return `<button class="legend-item${on ? " on" : ""}${off ? " off" : ""}" data-i="${i}">
+      <span class="swatch" style="background:${item.color}"></span>
+      <span>${escapeHtml(item.value)}</span><span class="count">${item.count}</span></button>`;
+  }).join("");
+}
+
+document.getElementById("legend").addEventListener("click", e => {
+  const btn = e.target.closest(".legend-item");
+  if (!btn) return;
+  const item = legend[btn.dataset.i];
+  const same = focus && focus.field === colorField && focus.value === item.value;
+  focus = same ? null : { field: colorField, value: item.value };
+  searchInput.value = "";
+  renderLegend();
+  draw();
+});
+
+searchInput.addEventListener("input", () => {
+  const q = searchInput.value.trim().toLowerCase();
+  focus = q ? { query: q } : null;
+  renderLegend();
+  draw();
+});
+
+searchInput.addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const q = searchInput.value.trim().toLowerCase();
+  const matches = data.cards.map((c, i) => i).filter(i => data.cards[i].name.toLowerCase().includes(q));
+  if (matches.length) zoomTo(matches);
+});
+
+document.getElementById("layouts").addEventListener("click", e => {
+  const btn = e.target.closest("button");
+  if (btn && data) setLayout(btn.dataset.layout);
+});
+document.getElementById("color").addEventListener("change", e => setColorField(e.target.value));
+document.getElementById("resetView").addEventListener("click", () => { fitView(); draw(); });
+
+// ---------- view ----------
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (data) { fitView(); draw(); }
+}
+window.addEventListener("resize", resize);
+
+function fitView(points = pos, indices = null) {
+  const w = canvas.clientWidth, h = canvas.clientHeight, pad = 30;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const list = indices || data.cards.map((c, i) => i);
+  for (const i of list) {
+    minX = Math.min(minX, points[2 * i]); maxX = Math.max(maxX, points[2 * i]);
+    minY = Math.min(minY, points[2 * i + 1]); maxY = Math.max(maxY, points[2 * i + 1]);
+  }
+  // at least 20 world units across, so zooming to a single card doesn't zoom in forever
+  view.scale = Math.min((w - 2 * pad) / Math.max(maxX - minX, 20), (h - 2 * pad) / Math.max(maxY - minY, 20));
+  view.x = w / 2 - (minX + maxX) / 2 * view.scale;
+  view.y = h / 2 - (minY + maxY) / 2 * view.scale;
+}
+
+function zoomTo(indices) {
+  fitView(pos, indices);
+  if (indices.length === 1) select(indices[0]);
+  draw();
+}
+
+const sx = i => pos[2 * i] * view.scale + view.x;
+const sy = i => pos[2 * i + 1] * view.scale + view.y;
+
+// ---------- drawing ----------
+
+function draw() {
+  if (!data) return;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  const n = data.cards.length;
+
+  const visible = [];
+  for (let i = 0; i < n; i++) {
+    const x = sx(i), y = sy(i);
+    if (x > -40 && x < w + 40 && y > -60 && y < h + 60) visible.push(i);
+  }
+  const tilePx = layout === "grid" ? layouts.grid.tile * view.scale : 0;
+  const useThumbs = layout === "grid" ? tilePx >= THUMB_MIN_TILE_PX : visible.length <= THUMB_MAX_VISIBLE;
+
+  // dimmed cards first, so focused ones are drawn on top
+  const order = focus ? [...visible.filter(i => !isFocused(i)), ...visible.filter(isFocused)] : visible;
+  if (useThumbs) drawThumbs(order, tilePx);
+  else drawDots(order, tilePx);
+
+  if (!useThumbs && layout !== "pca") drawRegionLabels();
+  if (selected >= 0) drawNeighbors();
+  if (hovered >= 0) {
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx(hovered), sy(hovered), 7, 0, 2 * Math.PI); ctx.stroke();
+  }
+}
+
+function drawDots(order, tilePx) {
+  // small, translucent dots: crowded areas read as darker/denser instead of one solid blob
+  const size = layout === "grid" ? Math.max(2, tilePx * 0.8) : Math.max(2.5, Math.min(6, view.scale * 3));
+  ctx.globalAlpha = layout === "grid" ? 0.9 : 0.6;
+  for (const i of order) {
+    ctx.fillStyle = isFocused(i) ? colors[i] : DIM_COLOR;
+    if (layout === "grid") ctx.fillRect(sx(i) - size / 2, sy(i) - size * CARD_ASPECT / 2, size, size * CARD_ASPECT);
+    else ctx.fillRect(sx(i) - size / 2, sy(i) - size / 2, size, size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawThumbs(order, tilePx) {
+  const tw = layout === "grid" ? tilePx * 0.92 : Math.max(28, Math.min(70, view.scale * 6));
+  const th = tw * CARD_ASPECT;
+  for (const i of order) {
+    const x = sx(i) - tw / 2, y = sy(i) - th / 2;
+    ctx.globalAlpha = isFocused(i) ? 1 : 0.12;
+    ctx.fillStyle = colors[i];  // coloured frame keeps the colour coding visible
+    ctx.fillRect(x - 2, y - 2, tw + 4, th + 4);
+    const img = thumb(data.cards[i].card_id);
+    if (img.complete && img.naturalWidth) ctx.drawImage(img, x, y, tw, th);
+    else { ctx.fillStyle = "#222"; ctx.fillRect(x, y, tw, th); }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function thumb(cardId) {
+  let img = thumbs.get(cardId);
+  if (!img) {
+    img = new Image();
+    img.onload = scheduleDraw;
+    img.src = `/card/${encodeURIComponent(cardId)}?size=low`;
+    thumbs.set(cardId, img);
+  }
+  return img;
+}
+
+let drawPending = false;
+function scheduleDraw() {  // many thumbnails finish loading at once; redraw once per frame
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => { drawPending = false; draw(); });
+}
+
+// One label per k-means region (computed offline), placed at the region's centre in this layout.
+function drawRegionLabels() {
+  const k = data.regions.length;
+  const sum = Array.from({ length: k }, () => [0, 0, 0]);
+  data.cluster.forEach((c, i) => { sum[c][0] += sx(i); sum[c][1] += sy(i); sum[c][2]++; });
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(17, 20, 24, .9)"; ctx.fillStyle = "#e8ecf0";
+  // biggest regions first; skip any label that would overlap one already drawn
+  const placed = [];
+  const order = sum.map((s, c) => c).filter(c => sum[c][2] && data.regions[c]).sort((a, b) => sum[b][2] - sum[a][2]);
+  for (const c of order) {
+    const x = sum[c][0] / sum[c][2], y = sum[c][1] / sum[c][2];
+    const w = ctx.measureText(data.regions[c]).width + 8, h = 16;
+    if (placed.some(r => Math.abs(r.x - x) < (r.w + w) / 2 && Math.abs(r.y - y) < h)) continue;
+    placed.push({ x, y, w });
+    ctx.strokeText(data.regions[c], x, y);
+    ctx.fillText(data.regions[c], x, y);
+  }
+}
+
+function drawNeighbors() {
+  const x0 = sx(selected), y0 = sy(selected);
+  ctx.strokeStyle = "rgba(255, 255, 255, .7)"; ctx.lineWidth = 1.5;
+  for (const j of data.neighbors[selected]) {
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(sx(j), sy(j)); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx(j), sy(j), 5, 0, 2 * Math.PI); ctx.stroke();
+  }
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x0, y0, 8, 0, 2 * Math.PI); ctx.stroke();
+}
+
+// ---------- selection panel ----------
+
+function select(i) {
+  selected = i;
+  const el = document.getElementById("selected");
+  if (i < 0) { el.hidden = true; draw(); return; }
+  const card = data.cards[i];
+  const neighbors = data.neighbors[i];
+  // How many of the 10 true (256-d) neighbours are also among the 10 closest points in this 2-D view?
+  const near2d = data.cards.map((c, j) => j).filter(j => j !== i)
+    .sort((a, b) => dist2(a, i) - dist2(b, i)).slice(0, neighbors.length);
+  const kept = neighbors.filter(j => near2d.includes(j)).length;
+  el.innerHTML = `
+    <h2>Selected card</h2>
+    <div class="card">
+      <img src="/card/${encodeURIComponent(card.card_id)}?size=low" alt="">
+      <div><div class="name">${escapeHtml(card.name)}</div>
+        <div class="meta">${escapeHtml(card.set_name)} · ${escapeHtml(card.card_id)}</div>
+        <div class="meta">${escapeHtml(card.category)} · ${escapeHtml(card.rarity)}</div></div>
+    </div>
+    <p class="kept">${kept}/${neighbors.length} of its nearest neighbours in 256-d are also
+      among its ${neighbors.length} closest points in this ${layout === "pca" ? "PCA" : layout === "grid" ? "card wall" : "UMAP"} view.</p>
+    <h2>10 nearest neighbours (what retrieval sees)</h2>
+    <div class="neighbors">${neighbors.map(j => `
+      <button data-i="${j}" title="${escapeHtml(data.cards[j].name)} · ${escapeHtml(data.cards[j].set_name)}">
+        <img src="/card/${encodeURIComponent(data.cards[j].card_id)}?size=low" alt=""></button>`).join("")}</div>
+    <p class="note">Click a neighbour to jump to it.</p>`;
+  el.hidden = false;
+  draw();
+}
+
+const dist2 = (a, b) => (pos[2 * a] - pos[2 * b]) ** 2 + (pos[2 * a + 1] - pos[2 * b + 1]) ** 2;
+
+document.getElementById("selected").addEventListener("click", e => {
+  const btn = e.target.closest(".neighbors button");
+  if (btn) select(Number(btn.dataset.i));
+});
+
+// ---------- mouse ----------
+
+function pick(mx, my) {
+  let best = -1, bestD = 14 * 14;  // within 14 px
+  for (let i = 0; i < data.cards.length; i++) {
+    const d = (sx(i) - mx) ** 2 + (sy(i) - my) ** 2;
+    if (d < bestD && isFocused(i)) { best = i; bestD = d; }
+  }
+  return best;
+}
+
+let drag = null;
+canvas.addEventListener("pointerdown", e => {
+  drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", e => {
+  if (!data) return;
+  const rect = canvas.getBoundingClientRect();
+  if (drag) {
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; canvas.classList.add("dragging"); }
+    if (drag.moved) { view.x = drag.vx + dx; view.y = drag.vy + dy; hideTooltip(); draw(); return; }
+  }
+  const i = pick(e.clientX - rect.left, e.clientY - rect.top);
+  if (i !== hovered) { hovered = i; draw(); }
+  if (i >= 0) showTooltip(i, e.clientX, e.clientY); else hideTooltip();
+});
+canvas.addEventListener("pointerup", e => {
+  canvas.classList.remove("dragging");
+  if (drag && !drag.moved) select(hovered);
+  drag = null;
+});
+canvas.addEventListener("pointerleave", () => { hovered = -1; hideTooltip(); draw(); });
+
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  view.x = mx - (mx - view.x) * factor;  // zoom around the cursor
+  view.y = my - (my - view.y) * factor;
+  view.scale *= factor;
+  draw();
+}, { passive: false });
+
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  focus = null; searchInput.value = "";
+  renderLegend(); select(-1);
+});
+
+let tooltipCard = -1;
+function showTooltip(i, x, y) {
+  const c = data.cards[i];
+  if (i !== tooltipCard) tooltip.innerHTML = `<img src="/card/${encodeURIComponent(c.card_id)}?size=low" alt="">
+    <div><div class="name">${escapeHtml(c.name)}</div>
+      <div class="meta">${escapeHtml(c.set_name)} · ${escapeHtml(c.card_id)}</div>
+      <div class="meta">${escapeHtml(c.category)} · ${escapeHtml(c.rarity)}</div></div>`;
+  tooltipCard = i;
+  tooltip.hidden = false;
+  const r = tooltip.getBoundingClientRect();
+  tooltip.style.left = Math.min(x + 16, window.innerWidth - r.width - 8) + "px";
+  tooltip.style.top = Math.min(y + 16, window.innerHeight - r.height - 8) + "px";
+}
+function hideTooltip() { tooltip.hidden = true; tooltipCard = -1; }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+load();
+</script>
+</body>
+</html>

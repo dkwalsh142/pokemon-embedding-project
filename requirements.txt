@@ -7,3 +7,4 @@ torchvision
 timm
 opencv-python-headless
 flask
+umap-learn

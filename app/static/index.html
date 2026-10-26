@@ -35,6 +35,8 @@
   button { cursor: pointer; }
   button:hover { border-color: var(--accent); }
   button.primary { border-color: var(--accent); color: var(--accent); }
+  .navlink { color: var(--accent); text-decoration: none; }
+  .navlink:hover { text-decoration: underline; }
   /* one line only: a wrapping status would change the header height and shift the image */
   #stats {
     color: var(--muted); font-variant-numeric: tabular-nums; text-align: right;
@@ -140,6 +142,9 @@
   <button id="back" hidden>Back to camera</button>
   <select id="camera" title="Camera"></select>
   <button id="reset">Clear log</button>
+  <label title="White-balance and expose each image before matching, so a warm lamp or dim room looks more like the clean scans">
+    <input type="checkbox" id="normalize"> Normalize lighting</label>
+  <a href="/embeddings" class="navlink" title="2-D map of every card's embedding">Embedding map →</a>
   <span id="stats">starting…</span>
 </header>
 <main>
@@ -159,6 +164,13 @@
   </aside>
 </main>
 <div id="dropzone">Drop images to identify every card in them</div>
+<!-- Shows the lighting correction on screen: the same per-channel multiply the server applied.
+     sRGB so it multiplies the pixel values directly, like the server does. -->
+<svg width="0" height="0" style="position:absolute">
+  <filter id="lighting" color-interpolation-filters="sRGB">
+    <feColorMatrix id="lighting-matrix" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"/>
+  </filter>
+</svg>
 
 <script>
 const MAX_SEND_WIDTH = 1280;  // webcam frames are scaled down to this before upload
@@ -168,6 +180,35 @@ const overlay = document.getElementById("overlay");
 const grab = document.createElement("canvas");  // off-screen canvas used to encode frames
 const stats = document.getElementById("stats");
 const cameraSelect = document.getElementById("camera");
+const normalizeBox = document.getElementById("normalize");
+try { normalizeBox.checked = localStorage.getItem("normalizeLighting") === "1"; } catch {}
+normalizeBox.addEventListener("change", () => {
+  try { localStorage.setItem("normalizeLighting", normalizeBox.checked ? "1" : "0"); } catch {}
+  if (!normalizeBox.checked) showGains(null);
+  if (mode === "still" && currentUpload?.result) rerunUpload(currentUpload);  // camera frames pick it up on their own
+});
+
+// Apply the server's lighting gains ([R, G, B], or null) to the displayed video/image.
+function showGains(gains) {
+  const [r, g, b] = gains || [1, 1, 1];
+  document.getElementById("lighting-matrix").setAttribute("values", `${r} 0 0 0 0  0 ${g} 0 0 0  0 0 ${b} 0 0  0 0 0 1 0`);
+  video.style.filter = still.style.filter = gains ? "url(#lighting)" : "";
+}
+const gainsText = gains => gains ? ` · lighting R×${gains[0].toFixed(2)} G×${gains[1].toFixed(2)} B×${gains[2].toFixed(2)}` : "";
+
+// Identify the shown image again (after the lighting toggle changed) and rebuild its sidebar group.
+async function rerunUpload(upload) {
+  stats.textContent = `identifying ${upload.file.name}…`;
+  try {
+    upload.result = await postIdentify(upload.file);
+    upload.el?.remove();
+    addUpload(upload);
+    if (currentUpload === upload) { showGains(upload.result.gains); redraw(); }
+    stats.textContent = `${upload.file.name}: ${upload.result.cards.filter(c => c.ok && !c.whole_image).length} card(s)${gainsText(upload.result.gains)}`;
+  } catch (err) {
+    stats.textContent = `${upload.file.name}: failed`;
+  }
+}
 let stream = null;
 let mode = "camera";  // "camera" = live loop running; "still" = showing a dropped-in image
 let cameraOk = false;
@@ -214,12 +255,13 @@ async function loop() {
 
     const t0 = performance.now();
     try {
-      const resp = await fetch("/frame", { method: "POST", body: jpeg, headers: { "Content-Type": "image/jpeg" } });
+      const resp = await fetch("/frame" + (normalizeBox.checked ? "?normalize=1" : ""), { method: "POST", body: jpeg, headers: { "Content-Type": "image/jpeg" } });
       if (!resp.ok) throw new Error(`server said ${resp.status}`);
       const result = await resp.json();
       if (mode !== "camera") continue;  // an image was dropped while this frame was in flight
       const ms = performance.now() - t0;
-      stats.textContent = `${result.cards.length} card(s) · ${ms.toFixed(0)} ms · ${(1000 / ms).toFixed(1)} fps`;
+      stats.textContent = `${result.cards.length} card(s) · ${ms.toFixed(0)} ms · ${(1000 / ms).toFixed(1)} fps${gainsText(result.gains)}`;
+      showGains(result.gains);
       drawBoxes(result);
       showCurrent(result);
       result.played.forEach(addEvent);
@@ -293,6 +335,7 @@ function showStill(upload) {
   video.hidden = true;
   still.hidden = false;
   if (still.src !== upload.url) still.src = upload.url;
+  showGains(upload.result?.gains);  // each image keeps the correction it was identified with
   document.getElementById("message").hidden = true;
   document.getElementById("back").hidden = !cameraOk;
   redraw();
@@ -310,7 +353,8 @@ document.getElementById("back").onclick = () => {
 };
 
 async function postIdentify(file, params) {
-  const query = params ? "?" + new URLSearchParams(params) : "";
+  params = { ...params, ...(normalizeBox.checked ? { normalize: 1 } : {}) };
+  const query = Object.keys(params).length ? "?" + new URLSearchParams(params) : "";
   const resp = await fetch("/identify" + query, {
     method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream" },
   });
@@ -330,10 +374,10 @@ async function identifyFiles(files) {
     stats.textContent = `identifying ${file.name}…`;
     try {
       upload.result = await postIdentify(file);
-      if (currentUpload === upload) redraw();
+      if (currentUpload === upload) { showGains(upload.result.gains); redraw(); }
       addUpload(upload);
       const found = upload.result.cards.filter(c => c.ok && !c.whole_image).length;
-      stats.textContent = `${file.name}: ${found} card(s) · ${HINT}`;
+      stats.textContent = `${file.name}: ${found} card(s)${gainsText(upload.result.gains)} · ${HINT}`;
     } catch (err) {
       addUpload(upload, err.message);
       stats.textContent = `${file.name}: failed`;
